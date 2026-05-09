@@ -77,6 +77,10 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
+    androidResources {
+        noCompress += ["gguf"]
+    }
+
     namespace "com.pal"
     defaultConfig {
         applicationId "com.pal"
