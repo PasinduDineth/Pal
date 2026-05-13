@@ -78,7 +78,7 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     androidResources {
-        noCompress += ["gguf"]
+        noCompress += ["gguf", "onnx", "txt"]
     }
 
     namespace "com.pal"
@@ -88,6 +88,12 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+    }
+    sourceSets {
+        main {
+            jniLibs.srcDirs += ["../vendor/jniLibs"]
+            assets.srcDirs += ["../vendor/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"]
+        }
     }
     signingConfigs {
         debug {
