@@ -19,14 +19,23 @@ import {
   loadLocalLlm,
   type ChatMessage,
 } from './src/services/llm';
+import {
+  isSpeechToTextSupported,
+  requestSpeechPermission,
+  startSpeechToText,
+  stopSpeechToText,
+  subscribeToSpeechToText,
+} from './src/services/stt';
 
 type Message = ChatMessage & {
   id: string;
 };
 
 function App() {
+  const readyStatusRef = useRef('Starting local model...');
   const isDarkMode = useColorScheme() === 'dark';
   const listRef = useRef<FlatList<Message>>(null);
+  const speechBaseInputRef = useRef('');
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
@@ -38,6 +47,20 @@ function App() {
   const [status, setStatus] = useState('Starting local model...');
   const [isReady, setIsReady] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+
+  const mergeInput = useCallback((base: string, next: string) => {
+    const trimmedNext = next.trim();
+    if (!trimmedNext) {
+      return base;
+    }
+
+    if (!base.trim()) {
+      return trimmedNext;
+    }
+
+    return `${base.trimEnd()} ${trimmedNext}`;
+  }, []);
 
   const loadModel = useCallback(() => {
     setIsBusy(true);
@@ -45,10 +68,11 @@ function App() {
 
     loadLocalLlm(progress => {
       setStatus(`Loading model ${Math.round(progress * 100)}%`);
-      })
+    })
       .then(() => {
+        readyStatusRef.current = 'Ready';
         setIsReady(true);
-        setStatus('Ready');
+        setStatus(readyStatusRef.current);
       })
       .catch(error => {
         setStatus(error instanceof Error ? error.message : 'Model load failed.');
@@ -62,9 +86,37 @@ function App() {
     loadModel();
   }, [loadModel]);
 
+  useEffect(() => {
+    return subscribeToSpeechToText({
+      onPartial: text => {
+        setInput(mergeInput(speechBaseInputRef.current, text));
+      },
+      onFinal: text => {
+        const merged = mergeInput(speechBaseInputRef.current, text);
+        speechBaseInputRef.current = merged;
+        setInput(merged);
+      },
+      onError: message => {
+        setIsRecording(false);
+        setStatus(message);
+      },
+      onState: nextState => {
+        if (nextState === 'listening') {
+          setStatus('Listening...');
+          return;
+        }
+
+        if (nextState === 'idle') {
+          setIsRecording(false);
+          setStatus(readyStatusRef.current);
+        }
+      },
+    });
+  }, [mergeInput]);
+
   const sendMessage = useCallback(async () => {
     const trimmed = input.trim();
-    if (!trimmed || isBusy || !isReady) {
+    if (!trimmed || isBusy || !isReady || isRecording) {
       return;
     }
 
@@ -109,8 +161,7 @@ function App() {
             : message,
         ),
       );
-      setIsReady(true);
-      setStatus('Ready');
+      setStatus(readyStatusRef.current);
     } catch (error) {
       setMessages(current =>
         current.map(message =>
@@ -129,7 +180,46 @@ function App() {
     } finally {
       setIsBusy(false);
     }
-  }, [input, isBusy, isReady, messages]);
+  }, [input, isBusy, isReady, isRecording, messages]);
+
+  const startRecording = useCallback(async () => {
+    if (!isSpeechToTextSupported || isBusy || isRecording) {
+      return;
+    }
+
+    const granted = await requestSpeechPermission();
+    if (!granted) {
+      setStatus('Microphone permission denied.');
+      return;
+    }
+
+    try {
+      speechBaseInputRef.current = input;
+      setIsRecording(true);
+      setStatus('Starting microphone...');
+      await startSpeechToText();
+    } catch (error) {
+      setIsRecording(false);
+      setStatus(
+        error instanceof Error ? error.message : 'Unable to start speech-to-text.',
+      );
+    }
+  }, [input, isBusy, isRecording]);
+
+  const stopRecording = useCallback(async () => {
+    if (!isRecording) {
+      return;
+    }
+
+    try {
+      await stopSpeechToText();
+    } catch (error) {
+      setIsRecording(false);
+      setStatus(
+        error instanceof Error ? error.message : 'Unable to stop speech-to-text.',
+      );
+    }
+  }, [isRecording]);
 
   return (
     <SafeAreaProvider>
@@ -169,7 +259,7 @@ function App() {
         <View className="flex-row items-end gap-2 border-t border-slate-800 p-4">
           <TextInput
             className="max-h-28 flex-1 rounded-md bg-slate-900 px-3 py-3 text-base text-white"
-            editable={!isBusy && isReady}
+            editable={!isBusy && isReady && !isRecording}
             multiline
             onChangeText={setInput}
             placeholder={isReady ? 'Ask Qwen locally...' : 'Starting Qwen...'}
@@ -178,9 +268,26 @@ function App() {
           />
           <Pressable
             className={`rounded-md px-4 py-3 ${
-              input.trim() && !isBusy && isReady ? 'bg-red-500' : 'bg-slate-700'
+              isSpeechToTextSupported && !isBusy && isReady
+                ? isRecording
+                  ? 'bg-amber-500'
+                  : 'bg-slate-700'
+                : 'bg-slate-800'
             }`}
-            disabled={!input.trim() || isBusy || !isReady}
+            disabled={!isSpeechToTextSupported || isBusy || !isReady}
+            onPressIn={startRecording}
+            onPressOut={stopRecording}>
+            <Text className="font-semibold text-white">
+              {isRecording ? 'Release' : 'Talk'}
+            </Text>
+          </Pressable>
+          <Pressable
+            className={`rounded-md px-4 py-3 ${
+              input.trim() && !isBusy && isReady && !isRecording
+                ? 'bg-red-500'
+                : 'bg-slate-700'
+            }`}
+            disabled={!input.trim() || isBusy || !isReady || isRecording}
             onPress={sendMessage}>
             <Text className="font-semibold text-white">Send</Text>
           </Pressable>
